@@ -7,18 +7,31 @@ import random
 import cv2
 import numpy as np
 import time
+import keras
 
+# For now, the strat is 2 gateways into as many stargates as possible for voidrays
 class padBot(sc2.BotAI):
-    def __init__(self):
+    def __init__(self, use_model=False):
         self.ITERATIONS_PER_MINUTE = 165
         self.MAX_WORKERS = 50
         self.do_something_after = 0
         self.train_data = []
         self.home_nexus = False
+        self.use_model = use_model
+
+        if self.use_model:
+            print("Using model!")
+            self.model = keras.models.load_model("BasicCNN-50-epochs-0.0001-LR-STAGE1")
 
     def on_end(self, game_result):
         print('--- on_end called ---')
-        print(game_result)
+        print(game_result, self.use_model)
+
+        with open("log.txt", "a") as f:
+            if self.use_model:
+                f.write("Model {}\n".format(game_result))
+            else:
+                f.write("Random {}\n".format(game_result))
 
         if game_result == Result.Victory:
             np.save("train_data/{}.npy".format(str(int(time.time()))), np.array(self.train_data))
@@ -31,10 +44,10 @@ class padBot(sc2.BotAI):
         await self.distribute_workers()
         await self.build_workers()
         await self.build_pylons()
+        await self.build_offensive_force()
+        await self.offensive_force_buildings()
         await self.build_assimilators()
         await self.expand()
-        await self.offensive_force_buildings()
-        await self.build_offensive_force()
         await self.intel()
         await self.attack()
 
@@ -86,7 +99,8 @@ class padBot(sc2.BotAI):
                      CYBERNETICSCORE: [3, (150, 150, 0)],
                      STARGATE: [5, (255, 0, 0)],
                      ROBOTICSFACILITY: [5, (215, 155, 0)],
-
+                     ZEALOT: [2, (255, 50, 0)],
+                     STALKER: [2, (255, 50, 50)],
                      VOIDRAY: [3, (255, 100, 0)],
                      #OBSERVER: [3, (255, 255, 255)],
                     }
@@ -161,7 +175,7 @@ class padBot(sc2.BotAI):
 
 
     async def build_workers(self):
-        if (len(self.units(NEXUS)) * 16) > len(self.units(PROBE)) and len(self.units(PROBE)) < self.MAX_WORKERS:
+        if (len(self.units(NEXUS)) * 22) > len(self.units(PROBE)) and len(self.units(PROBE)) < self.MAX_WORKERS:
             for nexus in self.units(NEXUS).ready.noqueue:
                 if self.can_afford(PROBE):
                     await self.do(nexus.train(PROBE))
@@ -174,19 +188,20 @@ class padBot(sc2.BotAI):
                     await self.build(PYLON, near=nexuses.first)
 
     async def build_assimilators(self):
-        for nexus in self.units(NEXUS).ready:
-            vaspenes = self.state.vespene_geyser.closer_than(15.0, nexus)
-            for vaspene in vaspenes:
-                if not self.can_afford(ASSIMILATOR):
-                    break
-                worker = self.select_build_worker(vaspene.position)
-                if worker is None:
-                    break
-                if not self.units(ASSIMILATOR).closer_than(1.0, vaspene).exists:
-                    await self.do(worker.build(ASSIMILATOR, vaspene))
+        if self.units(GATEWAY).exists:
+            for nexus in self.units(NEXUS).ready:
+                vaspenes = self.state.vespene_geyser.closer_than(15.0, nexus)
+                for vaspene in vaspenes:
+                    if not self.can_afford(ASSIMILATOR):
+                        break
+                    worker = self.select_build_worker(vaspene.position)
+                    if worker is None:
+                        break
+                    if not self.units(ASSIMILATOR).closer_than(1.0, vaspene).exists:
+                        await self.do(worker.build(ASSIMILATOR, vaspene))
 
     async def expand(self):
-        if self.units(NEXUS).amount < (self.iteration / self.ITERATIONS_PER_MINUTE) and self.can_afford(NEXUS):
+        if (self.units(NEXUS).amount * self.ITERATIONS_PER_MINUTE * 6 - 550) < self.iteration and self.can_afford(NEXUS) and not self.already_pending(NEXUS):
             await self.expand_now()
 
     async def offensive_force_buildings(self):
@@ -198,31 +213,28 @@ class padBot(sc2.BotAI):
                 if self.can_afford(CYBERNETICSCORE) and not self.already_pending(CYBERNETICSCORE):
                     await self.build(CYBERNETICSCORE, near=pylon)
 
-            elif len(self.units(GATEWAY)) < 1:
+            elif len(self.units(GATEWAY)) < 2:
                 if self.can_afford(GATEWAY) and not self.already_pending(GATEWAY):
                     await self.build(GATEWAY, near=pylon)
 
-            if self.units(CYBERNETICSCORE).ready.exists:
-                if len(self.units(ROBOTICSFACILITY)) < 1:
-                    if self.can_afford(ROBOTICSFACILITY) and not self.already_pending(ROBOTICSFACILITY):
-                        await self.build(ROBOTICSFACILITY, near=pylon)
-
-            if self.units(CYBERNETICSCORE).ready.exists:
-                if len(self.units(STARGATE)) <= (self.iteration / self.ITERATIONS_PER_MINUTE):
-                    if self.can_afford(STARGATE) and not self.already_pending(STARGATE):
+            elif self.units(CYBERNETICSCORE).ready.exists:
+                if self.units(STARGATE).amount * self.ITERATIONS_PER_MINUTE - 660 < self.iteration and self.units(STARGATE).amount < 5: # and not (self.units(STARGATE).ready.exists and self.units(VOIDRAY).amount < 2):
+                    if self.units(STARGATE).exists and (self.units(VOIDRAY).amount >= 1 or self.iteration > 1000) and self.can_afford(STARGATE):
+                        await self.build(STARGATE, near=pylon)
+                    elif not self.units(STARGATE).exists and self.can_afford(STARGATE):
                         await self.build(STARGATE, near=pylon)
 
     async def build_offensive_force(self):
         # Prioritize Voidrays if there are available stargates
         # Otherwise build stalkers and zealots
-        if self.units(NEXUS).amount * 500 > self.iteration:
+        if (self.units(NEXUS).amount * 6 * self.ITERATIONS_PER_MINUTE - 660) > self.iteration or (self.get_army_count() < 20 and self.iteration > self.ITERATIONS_PER_MINUTE * 8) :
             if self.units(STARGATE).ready.noqueue.exists and self.can_afford(VOIDRAY):
                 for sg in self.units(STARGATE).ready.noqueue:
                     if self.can_afford(VOIDRAY) and self.supply_left > 0:
                         await self.do(sg.train(VOIDRAY))
             else:
                 for gw in self.units(GATEWAY).ready.noqueue:
-                    if self.can_afford(STALKER) and self.supply_left > 0:
+                    if self.can_afford(STALKER) and self.supply_left > 0 and self.units(CYBERNETICSCORE).ready.exists:
                         await self.do(gw.train(STALKER))
                     elif self.can_afford(ZEALOT) and self.supply_left > 0:
                         await self.do(gw.train(ZEALOT))
@@ -240,6 +252,18 @@ class padBot(sc2.BotAI):
             choice = random.randrange(0, 4)
             target = False
             if self.iteration > self.do_something_after:
+                if self.use_model:
+                    prediction = self.model.predict([self.flipped.reshape([-1, 176, 200, 3])])
+                    choice = np.argmax(prediction[0])
+
+                    choice_dict = {0: "No Attack!",
+                                   1: "Attack close to our nexus!",
+                                   2: "Attack Enemy Structure!",
+                                   3: "Attack Eneemy Start!"}
+
+                    print("Choice #{}:{}".format(choice, choice_dict[choice]))
+                else:
+                    choice = random.randrange(0, 4)
                 if choice == 0 or self.iteration < 990:
                     # no attack
                     choice = 0
@@ -253,7 +277,7 @@ class padBot(sc2.BotAI):
                     else:
                         wait = 16
                         self.do_something_after = self.iteration + wait
-                            
+                        
                 elif choice == 1:
                     #attack_unit_closest_nexus
                     if len(self.known_enemy_units) > 0:
@@ -288,11 +312,46 @@ class padBot(sc2.BotAI):
 
 
 def main():
+    # while True:
+    #    difficulty = random.randrange(0,7)
+    #    if difficulty == 1 or difficulty == 4 or difficulty == 5:
+    #        run_game(maps.get("AbyssalReefLE"), [
+    #            Bot(Race.Protoss, padBot()),
+    #            Computer(Race.Terran, Difficulty.Hard)
+    #            ], realtime=False)
+    #    elif difficulty == 2 or difficulty == 3:
+    #       run_game(maps.get("AbyssalReefLE"), [
+    #            Bot(Race.Protoss, padBot()),
+    #            Computer(Race.Terran, Difficulty.Medium)
+    #            ], realtime=False) 
+    #    elif difficulty == 6:
+    #        run_game(maps.get("AbyssalReefLE"), [
+    #            Bot(Race.Protoss, padBot()),
+    #            Computer(Race.Terran, Difficulty.Harder)
+    #            ], realtime=False)
+    #    else:
+    #        run_game(maps.get("AbyssalReefLE"), [
+    #            Bot(Race.Protoss, padBot()),
+    #            Computer(Race.Terran, Difficulty.Easy)
+    #            ], realtime=False)
     while True:
-        run_game(maps.get("AbyssalReefLE"), [
-            Bot(Race.Protoss, padBot()),
-            Computer(Race.Terran, Difficulty.Hard)
-            ], realtime=False)
+        race = random.randrange(0, 3)
+        if race == 1 or race == 2:
+            run_game(maps.get("AbyssalReefLE"), [
+                Bot(Race.Protoss, padBot(use_model=True)),
+                Computer(Race.Terran, Difficulty.Hard),
+                ], realtime=False)
+        # elif race == 2:
+        #   run_game(maps.get("AbyssalReefLE"), [
+        #        Bot(Race.Protoss, padBot(use_model=True)),
+        #        Computer(Race.Protoss, Difficulty.Hard),
+        #        ], realtime=False)
+        else:
+            run_game(maps.get("AbyssalReefLE"), [
+                Bot(Race.Protoss, padBot(use_model=True)),
+                Computer(Race.Zerg, Difficulty.Hard),
+                ], realtime=False)
+
 
 if __name__ == '__main__':
     main()

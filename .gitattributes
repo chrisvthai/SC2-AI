@@ -1,0 +1,2 @@
+'*.py' filter=lfs diff=lfs merge=lfs -text
+'BasicCNN-50-epochs-0.0001-LR-STAGE1' filter=lfs diff=lfs merge=lfs -text
